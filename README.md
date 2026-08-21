@@ -1,2 +1,0 @@
-# Coindcx.bot
-Bot
