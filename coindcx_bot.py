@@ -186,5 +186,4 @@ def run_live_bot():
 if __name__ == "__main__":
     send_telegram("🚀 *CoinDCX Futures Trend Engine Online!*\nPairs: SOL, BTC, ETH | 1:4 RR | 3x Lev")
     run_live_bot()
-EOF
-                    
+    
