@@ -85,10 +85,11 @@ def place_order(symbol, side, price, sl, tp):
             "total_quantity": qty,
             "leverage": LEVERAGE,
             "notification": "no_notification",
-            "time_in_force": "ioc"
+                        "time_in_force": "immediateorcancel"
+            
         }
     }
-    
+
     json_body = json.dumps(body, separators=(',', ':'))
     sig = hmac.new(COINDCX_API_SECRET.encode(), json_body.encode(), hashlib.sha256).hexdigest()
     headers = {"Content-Type": "application/json", "X-AUTH-APIKEY": COINDCX_API_KEY, "X-AUTH-SIGNATURE": sig}
