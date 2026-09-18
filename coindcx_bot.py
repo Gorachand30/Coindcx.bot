@@ -48,7 +48,7 @@ def place_order(pair, side, price, sl, tp):
             "total_quantity": qty,
             "leverage": LEVERAGE,
             "notification": "no_notification",
-            "time_in_force": "immediateorcancel"
+            "time_in_force": "goodtillcancel"
         }
     }
     
