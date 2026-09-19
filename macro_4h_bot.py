@@ -68,7 +68,7 @@ def place_order(symbol, side, price, sl, tp):
     cfg = PAIRS_MAP[symbol]
     
     current_inr = get_futures_balance()
-    risk_inr = current_inr * 0.04 # 4% Risk
+    risk_inr = current_inr * 0.04  # 4% Risk
     sl_dist = abs(price - sl)
     
     qty = round((risk_inr / USD_INR) / sl_dist, cfg["precision"])
@@ -85,8 +85,7 @@ def place_order(symbol, side, price, sl, tp):
             "total_quantity": qty,
             "leverage": LEVERAGE,
             "notification": "no_notification",
-                        "time_in_force": "immediateorcancel"
-            
+            "time_in_force": "immediateorcancel"
         }
     }
 
