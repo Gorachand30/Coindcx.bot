@@ -1,4 +1,3 @@
-
 import time
 import requests
 import hmac
@@ -34,9 +33,13 @@ def place_order(pair, side, price, sl, tp):
     base_asset = pair.replace("USDT", "")
     coindcx_pair = f"B-{base_asset}_USDT"
     
-    qty = round((TRADE_AMOUNT_USDT * LEVERAGE) / price, 4)
+    # Lot Size & Precision Handling
     if base_asset == "BTC":
         qty = round((TRADE_AMOUNT_USDT * LEVERAGE) / price, 3)
+    elif base_asset == "ETH":
+        qty = round((TRADE_AMOUNT_USDT * LEVERAGE) / price, 3)
+    else:
+        qty = round((TRADE_AMOUNT_USDT * LEVERAGE) / price, 2)
 
     timestamp = int(round(time.time() * 1000))
     body = {
@@ -48,7 +51,7 @@ def place_order(pair, side, price, sl, tp):
             "total_quantity": qty,
             "leverage": LEVERAGE,
             "notification": "no_notification",
-            "time_in_force": "goodtillcancel"
+            "time_in_force": "immediateorcancel"
         }
     }
     
@@ -64,7 +67,7 @@ def place_order(pair, side, price, sl, tp):
     try:
         res = requests.post(url, data=json_body, headers=headers, timeout=10)
         res_data = res.json()
-        if res.status_code == 200:
+        if res.status_code == 200 and ("id" in res_data or res_data.get("status") == "success"):
             msg = (
                 f"⚡ *[AUTO-TRADE TRIGGERED - Trend Engine]*\n\n"
                 f"🪙 *Pair:* `{pair}`\n"
@@ -77,7 +80,8 @@ def place_order(pair, side, price, sl, tp):
             )
             send_telegram(msg)
         else:
-            send_telegram(f"⚠️ *Order Error ({pair}):* {res_data.get('message', res_data)}")
+            err = res_data.get("message", res_data)
+            send_telegram(f"⚠️ *Order Error ({pair}):* `{err}`")
     except Exception as e:
         print(f"Execution Error: {e}")
 
