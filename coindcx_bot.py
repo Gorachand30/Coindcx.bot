@@ -51,7 +51,7 @@ def place_order(pair, side, price, sl, tp):
             "total_quantity": qty,
             "leverage": LEVERAGE,
             "notification": "no_notification",
-            "time_in_force": "immediateorcancel"
+            "time_in_force": "immediate_or_cancel"
         }
     }
     
@@ -190,4 +190,3 @@ def run_live_bot():
 if __name__ == "__main__":
     send_telegram("🚀 *CoinDCX Futures Trend Engine Online!*\nPairs: SOL, BTC, ETH | 1:4 RR | 3x Lev")
     run_live_bot()
-    
