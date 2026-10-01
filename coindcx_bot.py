@@ -3,6 +3,23 @@ import requests
 import hmac
 import hashlib
 import json
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# ================= KEEP-ALIVE SERVER (FOR RENDER) =================
+class SimpleServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"CoinDCX 1H Bot is Alive and Scanning!")
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleServer)
+    server.serve_forever()
+
+threading.Thread(target=keep_alive, daemon=True).start()
 
 # ================= CONFIGURATION =================
 TELEGRAM_BOT_TOKEN = "8975800502:AAGkJttO42Vfp5kdenwDa_G7BaMwaz7qvyY"
@@ -79,11 +96,14 @@ def place_order(pair, side, price, sl, tp):
                 f"✅ *Status:* Order Executed on CoinDCX"
             )
             send_telegram(msg)
+            return True
         else:
             err = res_data.get("message", res_data)
             send_telegram(f"⚠️ *Order Error ({pair}):* `{err}`")
+            return False
     except Exception as e:
         print(f"Execution Error: {e}")
+        return False
 
 # ================= MARKET DATA & INDICATORS =================
 def fetch_klines(symbol):
@@ -126,9 +146,11 @@ def calc_atr14(candles):
 def run_live_bot():
     print("🚀 Donchian + EMA50 + Volume MA Live Engine Started...")
     already_traded = {}
+    loop_count = 0
     
     while True:
         try:
+            loop_count += 1
             for sym in SYMBOLS:
                 candles = fetch_klines(sym)
                 if not candles or len(candles) < 55:
@@ -169,18 +191,22 @@ def run_live_bot():
                     sl = round(entry - (SL_ATR_MULT * atr_14), 2)
                     risk = entry - sl
                     tp = round(entry + (risk * RR_RATIO), 2)
-                    place_order(sym, "BUY", entry, sl, tp)
-                    already_traded[sym] = candle_time
+                    if place_order(sym, "BUY", entry, sl, tp):
+                        already_traded[sym] = candle_time
                     
                 elif bear_cross and already_traded.get(sym) != candle_time:
                     entry = curr["open"]
                     sl = round(entry + (SL_ATR_MULT * atr_14), 2)
                     risk = sl - entry
                     tp = round(entry - (risk * RR_RATIO), 2)
-                    place_order(sym, "SELL", entry, sl, tp)
-                    already_traded[sym] = candle_time
+                    if place_order(sym, "SELL", entry, sl, tp):
+                        already_traded[sym] = candle_time
                 
                 time.sleep(2)
+            
+            # Har 5 scan cycles (~10 min) me live status print karega
+            if loop_count % 5 == 0:
+                print(f"[SCAN STATUS] Bot actively checking {SYMBOLS} at {time.strftime('%H:%M:%S')}")
                 
             time.sleep(120)  # Scan interval: 2 minutes
         except Exception as e:
@@ -190,3 +216,4 @@ def run_live_bot():
 if __name__ == "__main__":
     send_telegram("🚀 *CoinDCX Futures Trend Engine Online!*\nPairs: SOL, BTC, ETH | 1:4 RR | 3x Lev")
     run_live_bot()
+    
