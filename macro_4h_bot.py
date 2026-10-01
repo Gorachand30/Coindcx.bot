@@ -11,7 +11,7 @@ class SimpleServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is running!")
+        self.wfile.write(b"4H Macro Bot is running!")
 
 def keep_alive():
     port = int(os.environ.get("PORT", 10000))
@@ -35,7 +35,6 @@ PAIRS_MAP = {
 }
 
 TIMEFRAME = "4h"
-USD_INR = 89.0
 LEVERAGE = 5
 SL_ATR_MULT = 1.8
 RR_RATIO = 3.5
@@ -47,7 +46,7 @@ def send_telegram(message):
     except:
         pass
 
-def get_futures_balance():
+def get_futures_balance_usdt():
     url = "https://api.coindcx.com/exchange/v1/derivatives/futures/balances"
     ts = int(round(time.time() * 1000))
     body = {"timestamp": ts}
@@ -56,23 +55,25 @@ def get_futures_balance():
     headers = {"Content-Type": "application/json", "X-AUTH-APIKEY": COINDCX_API_KEY, "X-AUTH-SIGNATURE": sig}
     try:
         res = requests.post(url, data=json_body, headers=headers, timeout=10)
-        for b in res.json():
-            if b.get("currency") == "INR":
-                return float(b.get("available_balance", 5000.0))
-        return 5000.0
+        data = res.json()
+        for b in data:
+            if b.get("currency") == "USDT":
+                return float(b.get("available_balance", 100.0))
+        return 100.0
     except:
-        return 5000.0
+        return 100.0
 
 def place_order(symbol, side, price, sl, tp):
     url = "https://api.coindcx.com/exchange/v1/derivatives/futures/orders/create"
     cfg = PAIRS_MAP[symbol]
     
-    current_inr = get_futures_balance()
-    risk_inr = current_inr * 0.04  # 4% Risk
+    current_usdt = get_futures_balance_usdt()
+    risk_usdt = current_usdt * 0.04  # 4% Account Risk
     sl_dist = abs(price - sl)
     
-    qty = round((risk_inr / USD_INR) / sl_dist, cfg["precision"])
-    max_qty = round(((current_inr / USD_INR) * LEVERAGE * 0.9) / price, cfg["precision"])
+    # Position sizing directly based on USDT balance
+    qty = round(risk_usdt / sl_dist, cfg["precision"])
+    max_qty = round((current_usdt * LEVERAGE * 0.9) / price, cfg["precision"])
     qty = max(min(qty, max_qty), cfg["min_qty"])
 
     ts = int(round(time.time() * 1000))
@@ -98,7 +99,7 @@ def place_order(symbol, side, price, sl, tp):
         res_data = res.json()
         if "id" in res_data or res_data.get("status") == "success":
             msg = (
-                f"⚡ *[TRADE EXECUTED ON COINDCX]*\n\n"
+                f"⚡ *[TRADE EXECUTED ON COINDCX (4H Macro)]*\n\n"
                 f"🪙 *Pair:* `{symbol}`\n"
                 f"📊 *Side:* `{'LONG 🟢' if side == 'BUY' else 'SHORT 🔴'}`\n"
                 f"⚙️ *Leverage:* `{LEVERAGE}x`\n"
@@ -108,7 +109,7 @@ def place_order(symbol, side, price, sl, tp):
             send_telegram(msg)
             return True
         else:
-            err = res_data.get("message", "Unknown Error")
+            err = res_data.get("message", res_data)
             send_telegram(f"⚠️ *Order Error ({symbol}):* `{err}`")
             return False
     except Exception as e:
@@ -148,11 +149,13 @@ def calc_indicators(candles):
     return ema_200[-2], high_55, low_55, atr_14, adx_14
 
 def run_macro_engine():
-    send_telegram("🚀 *[4H Macro Engine Online - Live Balance Synced]*")
+    send_telegram("🚀 *[4H Macro Engine Online - USDT Balance Synced]*")
     already_traded = {}
+    loop_count = 0
 
     while True:
         try:
+            loop_count += 1
             for sym in PAIRS_MAP.keys():
                 candles = fetch_4h_candles(sym)
                 if not candles or len(candles) < 205:
@@ -184,8 +187,13 @@ def run_macro_engine():
                         break
                         
                 time.sleep(2)
-            time.sleep(300)
+            
+            if loop_count % 3 == 0:
+                print(f"[4H MACRO SCAN] Actively scanning at {time.strftime('%H:%M:%S')}")
+                
+            time.sleep(300)  # Scan every 5 minutes
         except Exception as e:
+            print(f"Loop Error: {e}")
             time.sleep(15)
 
 if __name__ == "__main__":
