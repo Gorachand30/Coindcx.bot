@@ -3,24 +3,6 @@ import requests
 import hmac
 import hashlib
 import json
-import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
-# ================= KEEP-ALIVE SERVER (FOR RENDER) =================
-class SimpleServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"CoinDCX 1H Bot is Alive and Scanning!")
-
-def keep_alive():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleServer)
-    server.serve_forever()
-
-threading.Thread(target=keep_alive, daemon=True).start()
-
 # ================= CONFIGURATION =================
 TELEGRAM_BOT_TOKEN = "8975800502:AAGkJttO42Vfp5kdenwDa_G7BaMwaz7qvyY"
 TELEGRAM_CHAT_ID = "8832380997"
