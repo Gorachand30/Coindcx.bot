@@ -3,6 +3,7 @@ import requests
 import hmac
 import hashlib
 import json
+
 # ================= CONFIGURATION =================
 TELEGRAM_BOT_TOKEN = "8975800502:AAGkJttO42Vfp5kdenwDa_G7BaMwaz7qvyY"
 TELEGRAM_CHAT_ID = "8832380997"
@@ -12,7 +13,7 @@ COINDCX_API_SECRET = "752ae196ccd6e5e71bfb57b08d48ab33a207cd6bbbb5211ebe25a0bbc5
 
 SYMBOLS = ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
 TIMEFRAME = "1h"
-TRADE_AMOUNT_USDT = 50.0  # Margin per trade
+BASE_MARGIN_USDT = 50.0   # Base trade margin
 LEVERAGE = 3
 RR_RATIO = 4.0
 SL_ATR_MULT = 1.5
@@ -24,21 +25,101 @@ def send_telegram(message):
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Telegram Alert Error: {e}")
+        print(f"Telegram Alert Error: {e}", flush=True)
+
+# ================= COINDCX BALANCE FETCH =================
+def get_wallet_balance():
+    url = "https://api.coindcx.com/exchange/v1/users/balances"
+    timestamp = int(round(time.time() * 1000))
+    body = {"timestamp": timestamp}
+    json_body = json.dumps(body, separators=(',', ':'))
+    signature = hmac.new(COINDCX_API_SECRET.encode(), json_body.encode(), hashlib.sha256).hexdigest()
+    
+    headers = {
+        "Content-Type": "application/json",
+        "X-AUTH-APIKEY": COINDCX_API_KEY,
+        "X-AUTH-SIGNATURE": signature
+    }
+    
+    try:
+        res = requests.post(url, data=json_body, headers=headers, timeout=10)
+        data = res.json()
+        if isinstance(data, list):
+            for item in data:
+                if item.get("currency") == "USDT":
+                    return float(item.get("balance", 0.0))
+        return None
+    except Exception as e:
+        print(f"Error fetching balance: {e}", flush=True)
+        return None
+
+# ================= RISK & PROFIT PRESERVATION ENGINE =================
+class RiskEngine:
+    def __init__(self, base_margin=50.0):
+        self.base_margin = base_margin
+        self.initial_balance = None
+        self.peak_balance = None
+        self.trading_halted = False
+        self.target_mult = 4.0         # 300% profit (4x balance)
+        self.max_drawdown = 0.15       # 15% peak drop freeze
+
+    def sync_balance(self, current_bal):
+        if current_bal is None or current_bal <= 0:
+            return
+
+        if self.initial_balance is None:
+            self.initial_balance = current_bal
+            self.peak_balance = current_bal
+            print(f"🏦 Initial Balance Synced: ${self.initial_balance:.2f} USDT", flush=True)
+            return
+
+        # Peak update
+        if current_bal > self.peak_balance:
+            self.peak_balance = current_bal
+
+        # Hard Profit Preservation check
+        if self.peak_balance >= (self.initial_balance * self.target_mult):
+            floor_limit = self.peak_balance * (1.0 - self.max_drawdown)
+            if current_bal < floor_limit and not self.trading_halted:
+                self.trading_halted = True
+                alert_msg = (
+                    f"🚨 *[HIGH-WATER MARK BREAKER TRIGGERED]*\n\n"
+                    f"⚠️ *Trading Halted to Lock Profit!*\n"
+                    f"📈 *Peak Balance:* `${self.peak_balance:.2f}`\n"
+                    f"📉 *Current Balance:* `${current_bal:.2f}`\n"
+                    f"🛑 *Drawdown > 15% from Peak.* No new orders will be placed."
+                )
+                send_telegram(alert_msg)
+                print(alert_msg, flush=True)
+
+    def get_trade_margin(self, current_bal):
+        if self.trading_halted or not current_bal or self.initial_balance is None:
+            return self.base_margin
+        
+        # Dynamic compounding
+        scale = current_bal / self.initial_balance
+        dynamic_margin = self.base_margin * scale
+        
+        # Min base_margin ($50) aur Max 2.5x ($125) tak capped
+        return round(max(self.base_margin, min(self.base_margin * 2.5, dynamic_margin)), 2)
+
+risk_engine = RiskEngine(base_margin=BASE_MARGIN_USDT)
 
 # ================= COINDCX FUTURES ORDER =================
-def place_order(pair, side, price, sl, tp):
+def place_order(pair, side, price, sl, tp, trade_margin):
+    if risk_engine.trading_halted:
+        print(f"Skipping trade on {pair}: Trading is halted by Risk Engine.", flush=True)
+        return False
+
     url = "https://api.coindcx.com/exchange/v1/derivatives/futures/orders/create"
     base_asset = pair.replace("USDT", "")
     coindcx_pair = f"B-{base_asset}_USDT"
     
     # Lot Size & Precision Handling
-    if base_asset == "BTC":
-        qty = round((TRADE_AMOUNT_USDT * LEVERAGE) / price, 3)
-    elif base_asset == "ETH":
-        qty = round((TRADE_AMOUNT_USDT * LEVERAGE) / price, 3)
+    if base_asset in ["BTC", "ETH"]:
+        qty = round((trade_margin * LEVERAGE) / price, 3)
     else:
-        qty = round((TRADE_AMOUNT_USDT * LEVERAGE) / price, 2)
+        qty = round((trade_margin * LEVERAGE) / price, 2)
 
     timestamp = int(round(time.time() * 1000))
     body = {
@@ -72,6 +153,7 @@ def place_order(pair, side, price, sl, tp):
                 f"🪙 *Pair:* `{pair}`\n"
                 f"📊 *Type:* `{'LONG (BUY)' if side == 'BUY' else 'SHORT (SELL)'}`\n"
                 f"💵 *Entry:* `${price}`\n"
+                f"💰 *Margin Used:* `${trade_margin} USDT`\n"
                 f"📦 *Qty:* `{qty}` ({LEVERAGE}x)\n"
                 f"🛑 *SL:* `${sl}`\n"
                 f"🎯 *TP (1:4):* `${tp}`\n"
@@ -84,7 +166,7 @@ def place_order(pair, side, price, sl, tp):
             send_telegram(f"⚠️ *Order Error ({pair}):* `{err}`")
             return False
     except Exception as e:
-        print(f"Execution Error: {e}")
+        print(f"Execution Error: {e}", flush=True)
         return False
 
 # ================= MARKET DATA & INDICATORS =================
@@ -126,13 +208,26 @@ def calc_atr14(candles):
 
 # ================= MAIN ENGINE =================
 def run_live_bot():
-    print("🚀 Donchian + EMA50 + Volume MA Live Engine Started...")
+    print("🚀 Donchian + EMA50 + Dynamic High-Water Risk Engine Started...", flush=True)
     already_traded = {}
     loop_count = 0
+    
+    # Starting wallet sync
+    initial_bal = get_wallet_balance()
+    if initial_bal:
+        risk_engine.sync_balance(initial_bal)
     
     while True:
         try:
             loop_count += 1
+            
+            # Har 5 minute me wallet balance refresh karein
+            curr_bal = get_wallet_balance()
+            if curr_bal:
+                risk_engine.sync_balance(curr_bal)
+
+            active_margin = risk_engine.get_trade_margin(curr_bal)
+
             for sym in SYMBOLS:
                 candles = fetch_klines(sym)
                 if not candles or len(candles) < 55:
@@ -173,7 +268,7 @@ def run_live_bot():
                     sl = round(entry - (SL_ATR_MULT * atr_14), 2)
                     risk = entry - sl
                     tp = round(entry + (risk * RR_RATIO), 2)
-                    if place_order(sym, "BUY", entry, sl, tp):
+                    if place_order(sym, "BUY", entry, sl, tp, active_margin):
                         already_traded[sym] = candle_time
                     
                 elif bear_cross and already_traded.get(sym) != candle_time:
@@ -181,21 +276,23 @@ def run_live_bot():
                     sl = round(entry + (SL_ATR_MULT * atr_14), 2)
                     risk = sl - entry
                     tp = round(entry - (risk * RR_RATIO), 2)
-                    if place_order(sym, "SELL", entry, sl, tp):
+                    if place_order(sym, "SELL", entry, sl, tp, active_margin):
                         already_traded[sym] = candle_time
                 
                 time.sleep(2)
             
-            # Har 5 scan cycles (~10 min) me live status print karega
+            # Har 5 scan cycles (~10 min) me live status print
             if loop_count % 5 == 0:
-                print(f"[SCAN STATUS] Bot actively checking {SYMBOLS} at {time.strftime('%H:%M:%S')}")
+                bal_str = f"${curr_bal:.2f}" if curr_bal else "N/A"
+                peak_str = f"${risk_engine.peak_balance:.2f}" if risk_engine.peak_balance else "N/A"
+                print(f"[SCAN STATUS] Checking {SYMBOLS} | Bal: {bal_str} | Peak: {peak_str} | Dynamic Margin: ${active_margin} | Time: {time.strftime('%H:%M:%S')}", flush=True)
                 
             time.sleep(120)  # Scan interval: 2 minutes
         except Exception as e:
-            print(f"Scanner Loop Error: {e}")
+            print(f"Scanner Loop Error: {e}", flush=True)
             time.sleep(10)
 
 if __name__ == "__main__":
-    send_telegram("🚀 *CoinDCX Futures Trend Engine Online!*\nPairs: SOL, BTC, ETH | 1:4 RR | 3x Lev")
+    send_telegram("🚀 *CoinDCX Trend Engine + High-Water Risk Guard Online!*\nPairs: SOL, BTC, ETH | 1:4 RR | Dynamic Compounding")
     run_live_bot()
     
