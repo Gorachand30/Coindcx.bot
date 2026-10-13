@@ -1,184 +1,260 @@
+import os
 import time
-import requests
 import hmac
 import hashlib
 import json
+import requests
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from datetime import datetime
 
-# ================= ⚙️ PRO 4H TREND BOT =================
-TELEGRAM_BOT_TOKEN = "8975800502:AAGkJttO42Vfp5kdenwDa_G7BaMwaz7qvyY"
-TELEGRAM_CHAT_ID = "8832380997"
+# ==========================================
+# 1. CONFIGURATION & CREDENTIALS
+# ==========================================
+API_KEY = os.getenv("COINDCX_API_KEY", "7d61f2026a877742fa383d46de018af964ff23cf3a97504d")
+API_SECRET = os.getenv("COINDCX_API_SECRET", "752ae196ccd6e5e71bfb57b08d48ab33a207cd6bbbb5211ebe25a0bbc5617967")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8975800502:AAGkJttO42Vfp5kdenwDa_G7BaMwaz7qvyY")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8832380997")
 
-COINDCX_API_KEY = "7d61f2026a877742fa383d46de018af964ff23cf3a97504d"
-COINDCX_API_SECRET = "752ae196ccd6e5e71bfb57b08d48ab33a207cd6bbbb5211ebe25a0bbc5617967"
+BASE_URL = "https://api.coindcx.com"
 
-PAIRS_MAP = {
-    "SOLUSDT": {"coindcx_pair": "B-SOL_USDT", "precision": 2, "min_qty": 0.1},
-    "BTCUSDT": {"coindcx_pair": "B-BTC_USDT", "precision": 3, "min_qty": 0.001},
-    "ETHUSDT": {"coindcx_pair": "B-ETH_USDT", "precision": 3, "min_qty": 0.01}
-}
+# Account Milestones & Risk Targets
+INITIAL_CAPITAL = 100.0
+TARGET_CAPITAL = 400.0       # 4x Goal: Stops trading automatically
+LEVERAGE = 3.5              # 3.5x leverage
+SL_ATR_MULT = 0.95           # Initial Stop Loss: 0.95x ATR
+ALLOCATION_RATE = 0.72       # 72% Compounding Allocation
 
-TIMEFRAME = "4h"
-LEVERAGE = 5
-SL_ATR_MULT = 1.8
-RR_RATIO = 3.5
+# Active Trading Pairs (Yahoo Finance -> CoinDCX Futures Symbol)
+SYMBOLS = [
+    {"yf": "SOL-USD", "coindcx": "B-SOL_USDT", "min_qty": 0.01},
+    {"yf": "ETH-USD", "coindcx": "B-ETH_USDT", "min_qty": 0.001},
+    {"yf": "BTC-USD", "coindcx": "B-BTC_USDT", "min_qty": 0.0001}
+]
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+# In-Memory Active Position Tracking
+active_positions = {}
+circuit_breaker_active = False
+
+# ==========================================
+# 2. TELEGRAM ALERT SYSTEM
+# ==========================================
+def send_telegram(msg):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"[CONSOLE LOG] {msg}")
+        return
     try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=10)
-    except:
-        pass
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Telegram dispatch error: {e}")
 
-def get_futures_balance_usdt():
-    url = "https://api.coindcx.com/exchange/v1/derivatives/futures/balances"
-    ts = int(round(time.time() * 1000))
-    body = {"timestamp": ts}
-    json_body = json.dumps(body, separators=(',', ':'))
-    sig = hmac.new(COINDCX_API_SECRET.encode(), json_body.encode(), hashlib.sha256).hexdigest()
-    headers = {"Content-Type": "application/json", "X-AUTH-APIKEY": COINDCX_API_KEY, "X-AUTH-SIGNATURE": sig}
+# ==========================================
+# 3. COINDCX FUTURES API WRAPPERS
+# ==========================================
+def sign_request(body_dict):
+    json_body = json.dumps(body_dict, separators=(',', ':'))
+    signature = hmac.new(
+        API_SECRET.encode('utf-8'),
+        json_body.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return json_body, signature
+
+def get_wallet_balance():
+    url = f"{BASE_URL}/exchange/v1/users/balances"
+    timestamp = int(round(time.time() * 1000))
+    body = {"timestamp": timestamp}
+    json_body, sig = sign_request(body)
+    headers = {
+        'Content-Type': 'application/json',
+        'X-AUTH-APIKEY': API_KEY,
+        'X-AUTH-SIGNATURE': sig
+    }
     try:
         res = requests.post(url, data=json_body, headers=headers, timeout=10)
         data = res.json()
-        for b in data:
-            if b.get("currency") == "USDT":
-                return float(b.get("available_balance", 100.0))
-        return 100.0
-    except:
-        return 100.0
+        for item in data:
+            if item.get("currency") == "USDT":
+                return float(item.get("balance", 0.0))
+    except Exception as e:
+        print(f"Balance fetch failed: {e}")
+    return INITIAL_CAPITAL
 
-def place_order(symbol, side, price, sl, tp):
-    url = "https://api.coindcx.com/exchange/v1/derivatives/futures/orders/create"
-    cfg = PAIRS_MAP[symbol]
-    
-    current_usdt = get_futures_balance_usdt()
-    risk_usdt = current_usdt * 0.04  # 4% Account Risk
-    sl_dist = abs(price - sl)
-    
-    # Position sizing directly based on USDT balance
-    qty = round(risk_usdt / sl_dist, cfg["precision"])
-    max_qty = round((current_usdt * LEVERAGE * 0.9) / price, cfg["precision"])
-    qty = max(min(qty, max_qty), cfg["min_qty"])
-
-    ts = int(round(time.time() * 1000))
+def place_order(pair, side, qty, order_type="market_order"):
+    url = f"{BASE_URL}/exchange/v1/derivatives/futures/orders/create"
+    timestamp = int(round(time.time() * 1000))
     body = {
-        "timestamp": ts,
-        "order": {
-            "side": "buy" if side == "BUY" else "sell",
-            "pair": cfg["coindcx_pair"],
-            "order_type": "market_order",
-            "total_quantity": qty,
-            "leverage": LEVERAGE,
-            "notification": "no_notification",
-            "time_in_force": "immediate_or_cancel"
-        }
+        "timestamp": timestamp,
+        "market": pair,
+        "side": side,
+        "order_type": order_type,
+        "total_quantity": qty,
+        "leverage": LEVERAGE
     }
-
-    json_body = json.dumps(body, separators=(',', ':'))
-    sig = hmac.new(COINDCX_API_SECRET.encode(), json_body.encode(), hashlib.sha256).hexdigest()
-    headers = {"Content-Type": "application/json", "X-AUTH-APIKEY": COINDCX_API_KEY, "X-AUTH-SIGNATURE": sig}
-    
+    json_body, sig = sign_request(body)
+    headers = {
+        'Content-Type': 'application/json',
+        'X-AUTH-APIKEY': API_KEY,
+        'X-AUTH-SIGNATURE': sig
+    }
     try:
         res = requests.post(url, data=json_body, headers=headers, timeout=10)
-        res_data = res.json()
-        if "id" in res_data or res_data.get("status") == "success":
-            msg = (
-                f"⚡ *[TRADE EXECUTED ON COINDCX (4H Macro)]*\n\n"
-                f"🪙 *Pair:* `{symbol}`\n"
-                f"📊 *Side:* `{'LONG 🟢' if side == 'BUY' else 'SHORT 🔴'}`\n"
-                f"⚙️ *Leverage:* `{LEVERAGE}x`\n"
-                f"📦 *Qty:* `{qty}`\n"
-                f"💵 *Entry:* `${price}` | 🛑 *SL:* `${sl}` | 🎯 *TP:* `${tp}`"
-            )
-            send_telegram(msg)
-            return True
-        else:
-            err = res_data.get("message", res_data)
-            send_telegram(f"⚠️ *Order Error ({symbol}):* `{err}`")
-            return False
+        return res.json()
     except Exception as e:
-        send_telegram(f"⚠️ *Network Error ({symbol}):* `{e}`")
-        return False
-
-def fetch_4h_candles(symbol):
-    try:
-        res = requests.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=210", timeout=10)
-        return [{"time": k[0], "open": float(k[1]), "high": float(k[2]), "low": float(k[3]), "close": float(k[4])} for k in res.json()]
-    except:
+        send_telegram(f"⚠️ *Order Execution Failed on {pair}:* {e}")
         return None
 
-def calc_indicators(candles):
-    closes = [c["close"] for c in candles]
-    highs = [c["high"] for c in candles]
-    lows = [c["low"] for c in candles]
-    
-    alpha = 2.0 / (200 + 1.0)
-    ema_200 = [closes[0]]
-    for p in closes[1:]:
-        ema_200.append(ema_200[-1] * (1.0 - alpha) + p * alpha)
-        
-    high_55 = max(highs[-56:-1])
-    low_55 = min(lows[-56:-1])
-    
-    tr = [max(candles[i]["high"] - candles[i]["low"], abs(candles[i]["high"] - candles[i-1]["close"]), abs(candles[i]["low"] - candles[i-1]["close"])) for i in range(1, len(candles))]
-    atr_14 = sum(tr[-14:]) / 14.0
-    
-    pdm = [highs[i] - highs[i-1] if (highs[i] - highs[i-1]) > (lows[i-1] - lows[i]) and (highs[i] - highs[i-1]) > 0 else 0 for i in range(1, len(candles))]
-    ndm = [lows[i-1] - lows[i] if (lows[i-1] - lows[i]) > (highs[i] - highs[i-1]) and (lows[i-1] - lows[i]) > 0 else 0 for i in range(1, len(candles))]
-    tr_s = sum(tr[-14:])
-    pdi = 100 * (sum(pdm[-14:]) / tr_s) if tr_s > 0 else 0
-    ndi = 100 * (sum(ndm[-14:]) / tr_s) if tr_s > 0 else 0
-    adx_14 = 100 * (abs(pdi - ndi) / (pdi + ndi)) if (pdi + ndi) > 0 else 0
-    
-    return ema_200[-2], high_55, low_55, atr_14, adx_14
+# ==========================================
+# 4. 30M SIGNAL & ATR GENERATOR
+# ==========================================
+def analyze_market(ticker):
+    df = yf.download(ticker, period="5d", interval="30m", progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.dropna().copy()
 
-def run_macro_engine():
-    send_telegram("🚀 *[4H Macro Engine Online - USDT Balance Synced]*")
-    already_traded = {}
-    loop_count = 0
+    df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
+    df['EMA26'] = df['Close'].ewm(span=26, adjust=False).mean()
 
+    tr = pd.concat([
+        df['High'] - df['Low'],
+        (df['High'] - df['Close'].shift(1)).abs(),
+        (df['Low'] - df['Close'].shift(1)).abs()
+    ], axis=1).max(axis=1)
+    df['ATR'] = tr.rolling(14).mean()
+
+    last = df.iloc[-1]
+    return {
+        "close": float(last['Close']),
+        "fast": float(last['EMA9']),
+        "slow": float(last['EMA26']),
+        "atr": float(last['ATR'])
+    }
+
+# ==========================================
+# 5. CORE EXECUTION & TRAILING ENGINE
+# ==========================================
+def run_trading_cycle():
+    global circuit_breaker_active, active_positions
+
+    current_balance = get_wallet_balance()
+
+    # --- 4x Target Hard Circuit Breaker ---
+    if current_balance >= TARGET_CAPITAL:
+        if not circuit_breaker_active:
+            circuit_breaker_active = True
+            send_telegram(
+                f"🎯 *TARGET HIT: $400+ REACHED!*\n"
+                f"Final Account Balance: `${current_balance:.2f}`\n"
+                f"Closing all open positions and locking profits."
+            )
+            for pair, pos in list(active_positions.items()):
+                close_side = "sell" if pos['side'] == "buy" else "buy"
+                place_order(pair, close_side, pos['qty'])
+                del active_positions[pair]
+        return
+
+    # --- Active Position Management & Dynamic Trailing ---
+    for item in SYMBOLS:
+        pair = item["coindcx"]
+        ticker = item["yf"]
+
+        if pair in active_positions:
+            stats = analyze_market(ticker)
+            cp = stats["close"]
+            fast = stats["fast"]
+            slow = stats["slow"]
+            atr = stats["atr"]
+            pos = active_positions[pair]
+
+            # Long Position Management
+            if pos['side'] == "buy":
+                if cp > pos['entry'] + (1.2 * atr):
+                    new_sl = max(pos['sl'], fast - (0.15 * atr))
+                    if new_sl > pos['sl']:
+                        pos['sl'] = new_sl
+                        send_telegram(f"📈 *Trailing SL Raised:* `{pair}` ➡️ `${new_sl:.2f}`")
+
+                if cp <= pos['sl'] or fast < slow:
+                    place_order(pair, "sell", pos['qty'])
+                    pnl = (cp - pos['entry']) * pos['qty']
+                    send_telegram(f"🛑 *Closed LONG on {pair}*\nExit Price: `${cp:.2f}`\nEstimated PnL: `${pnl:.2f}`")
+                    del active_positions[pair]
+
+            # Short Position Management
+            elif pos['side'] == "sell":
+                if cp < pos['entry'] - (1.2 * atr):
+                    new_sl = min(pos['sl'], fast + (0.15 * atr))
+                    if new_sl < pos['sl']:
+                        pos['sl'] = new_sl
+                        send_telegram(f"📉 *Trailing SL Lowered:* `{pair}` ➡️ `${new_sl:.2f}`")
+
+                if cp >= pos['sl'] or fast > slow:
+                    place_order(pair, "buy", pos['qty'])
+                    pnl = (pos['entry'] - cp) * pos['qty']
+                    send_telegram(f"🛑 *Closed SHORT on {pair}*\nExit Price: `${cp:.2f}`\nEstimated PnL: `${pnl:.2f}`")
+                    del active_positions[pair]
+
+    # --- Signal Search & Compounding Entries (Max 2 Positions) ---
+    if len(active_positions) < 2 and not circuit_breaker_active:
+        for item in SYMBOLS:
+            pair = item["coindcx"]
+            ticker = item["yf"]
+
+            if pair in active_positions:
+                continue
+
+            stats = analyze_market(ticker)
+            cp = stats["close"]
+            fast = stats["fast"]
+            slow = stats["slow"]
+            atr = stats["atr"]
+
+            # Dynamic Compounded Position Sizing
+            comp_margin = round(current_balance * ALLOCATION_RATE, 2)
+            qty = round((comp_margin * LEVERAGE) / cp, 4)
+
+            # Bullish Momentum Signal
+            if fast > slow and cp > fast:
+                res = place_order(pair, "buy", qty)
+                if res and "error" not in str(res).lower():
+                    sl = cp - (SL_ATR_MULT * atr)
+                    active_positions[pair] = {"side": "buy", "entry": cp, "sl": sl, "qty": qty}
+                    send_telegram(
+                        f"🚀 *NEW LONG ENTRY:* `{pair}`\n"
+                        f"Entry: `${cp:.2f}`\n"
+                        f"Stop Loss: `${sl:.2f}`\n"
+                        f"Margin Used: `${comp_margin}` ({LEVERAGE}x)"
+                    )
+                    break
+
+            # Bearish Momentum Signal
+            elif fast < slow and cp < fast:
+                res = place_order(pair, "sell", qty)
+                if res and "error" not in str(res).lower():
+                    sl = cp + (SL_ATR_MULT * atr)
+                    active_positions[pair] = {"side": "sell", "entry": cp, "sl": sl, "qty": qty}
+                    send_telegram(
+                        f"🔻 *NEW SHORT ENTRY:* `{pair}`\n"
+                        f"Entry: `${cp:.2f}`\n"
+                        f"Stop Loss: `${sl:.2f}`\n"
+                        f"Margin Used: `${comp_margin}` ({LEVERAGE}x)"
+                    )
+                    break
+
+# ==========================================
+# 6. MAIN SERVICE LOOP
+# ==========================================
+if __name__ == "__main__":
+    send_telegram("⚡ *30M 400% Target Compounding Bot Online*\nTracking: SOL, ETH, BTC")
+    print("Bot started. Running continuous loop...")
     while True:
         try:
-            loop_count += 1
-            for sym in PAIRS_MAP.keys():
-                candles = fetch_4h_candles(sym)
-                if not candles or len(candles) < 205:
-                    continue
-                
-                ema200, high55, low55, atr14, adx14 = calc_indicators(candles)
-                curr, prev = candles[-1], candles[-2]
-                c_time = prev["time"]
-                
-                bull = (prev["close"] > high55 and prev["close"] > ema200 and adx14 > 20)
-                bear = (prev["close"] < low55 and prev["close"] < ema200 and adx14 > 20)
-                
-                if bull and already_traded.get(sym) != c_time:
-                    entry = curr["open"]
-                    sl = round(entry - (SL_ATR_MULT * atr14), 2)
-                    tp = round(entry + ((entry - sl) * RR_RATIO), 2)
-                    if place_order(sym, "BUY", entry, sl, tp):
-                        already_traded[sym] = c_time
-                        time.sleep(10)
-                        break
-                        
-                elif bear and already_traded.get(sym) != c_time:
-                    entry = curr["open"]
-                    sl = round(entry + (SL_ATR_MULT * atr14), 2)
-                    tp = round(entry - ((sl - entry) * RR_RATIO), 2)
-                    if place_order(sym, "SELL", entry, sl, tp):
-                        already_traded[sym] = c_time
-                        time.sleep(10)
-                        break
-                        
-                time.sleep(2)
-            
-            if loop_count % 3 == 0:
-                print(f"[4H MACRO SCAN] Actively scanning at {time.strftime('%H:%M:%S')}")
-                
-            time.sleep(300)  # Scan every 5 minutes
+            run_trading_cycle()
         except Exception as e:
-            print(f"Loop Error: {e}")
-            time.sleep(15)
-
-if __name__ == "__main__":
-    run_macro_engine()
-    
+            print(f"Cycle execution error: {e}")
+        time.sleep(120)  # Check every 2 minutes
+            
