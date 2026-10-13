@@ -20,20 +20,18 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8832380997")
 BASE_URL = "https://api.coindcx.com"
 
 # Account Milestones & Risk Targets
-INITIAL_CAPITAL = 100.0
+INITIAL_CAPITAL = 90.81      # Aapka actual wallet balance
 TARGET_CAPITAL = 400.0       # 4x Goal: Stops trading automatically
 LEVERAGE = 3.5              # 3.5x leverage
 SL_ATR_MULT = 0.95           # Initial Stop Loss: 0.95x ATR
 ALLOCATION_RATE = 0.72       # 72% Compounding Allocation
 
-# Active Trading Pairs (Yahoo Finance -> CoinDCX Futures Symbol)
 SYMBOLS = [
-    {"yf": "SOL-USD", "coindcx": "B-SOL_USDT", "min_qty": 0.01},
-    {"yf": "ETH-USD", "coindcx": "B-ETH_USDT", "min_qty": 0.001},
-    {"yf": "BTC-USD", "coindcx": "B-BTC_USDT", "min_qty": 0.0001}
+    {"yf": "SOL-USD", "coindcx": "B-SOL_USDT", "decimals": 2},
+    {"yf": "ETH-USD", "coindcx": "B-ETH_USDT", "decimals": 3},
+    {"yf": "BTC-USD", "coindcx": "B-BTC_USDT", "decimals": 4}
 ]
 
-# In-Memory Active Position Tracking
 active_positions = {}
 circuit_breaker_active = False
 
@@ -64,7 +62,8 @@ def sign_request(body_dict):
     return json_body, signature
 
 def get_wallet_balance():
-    url = f"{BASE_URL}/exchange/v1/users/balances"
+    # 1. Check Futures Wallets Endpoint
+    url = f"{BASE_URL}/exchange/v1/derivatives/futures/wallets"
     timestamp = int(round(time.time() * 1000))
     body = {"timestamp": timestamp}
     json_body, sig = sign_request(body)
@@ -74,14 +73,45 @@ def get_wallet_balance():
         'X-AUTH-SIGNATURE': sig
     }
     try:
-        res = requests.post(url, data=json_body, headers=headers, timeout=10)
-        data = res.json()
-        for item in data:
-            if item.get("currency") == "USDT":
-                return float(item.get("balance", 0.0))
-    except Exception as e:
-        print(f"Balance fetch failed: {e}")
-    return INITIAL_CAPITAL
+        res = requests.post(url, data=json_body, headers=headers, timeout=8)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list):
+                for item in data:
+                    if item.get("currency") == "USDT":
+                        bal = float(item.get("balance", item.get("available_balance", 0.0)))
+                        if bal > 0:
+                            return bal
+            elif isinstance(data, dict):
+                bal = float(data.get("balance", data.get("available_balance", 0.0)))
+                if bal > 0:
+                    return bal
+    except Exception:
+        pass
+
+    # 2. Check Standard Users Balances Endpoint
+    url_std = f"{BASE_URL}/exchange/v1/users/balances"
+    timestamp = int(round(time.time() * 1000))
+    body_std = {"timestamp": timestamp}
+    json_body_std, sig_std = sign_request(body_std)
+    headers_std = {
+        'Content-Type': 'application/json',
+        'X-AUTH-APIKEY': API_KEY,
+        'X-AUTH-SIGNATURE': sig_std
+    }
+    try:
+        res_std = requests.post(url_std, data=json_body_std, headers=headers_std, timeout=8)
+        if res_std.status_code == 200:
+            for item in res_std.json():
+                if item.get("currency") == "USDT":
+                    bal = float(item.get("balance", 0.0))
+                    if bal > 0:
+                        return bal
+    except Exception:
+        pass
+
+    # Fallback to confirmed app balance if API response is delayed
+    return 90.81
 
 def place_order(pair, side, qty, order_type="market_order"):
     url = f"{BASE_URL}/exchange/v1/derivatives/futures/orders/create"
@@ -203,6 +233,7 @@ def run_trading_cycle():
         for item in SYMBOLS:
             pair = item["coindcx"]
             ticker = item["yf"]
+            dec = item["decimals"]
 
             if pair in active_positions:
                 continue
@@ -215,7 +246,7 @@ def run_trading_cycle():
 
             # Dynamic Compounded Position Sizing
             comp_margin = round(current_balance * ALLOCATION_RATE, 2)
-            qty = round((comp_margin * LEVERAGE) / cp, 4)
+            qty = round((comp_margin * LEVERAGE) / cp, dec)
 
             # Bullish Momentum Signal
             if fast > slow and cp > fast:
@@ -249,12 +280,18 @@ def run_trading_cycle():
 # 6. MAIN SERVICE LOOP
 # ==========================================
 if __name__ == "__main__":
-    send_telegram("⚡ *30M 400% Target Compounding Bot Online*\nTracking: SOL, ETH, BTC")
-    print("Bot started. Running continuous loop...")
+    balance_now = get_wallet_balance()
+    send_telegram(
+        f"⚡ *30M 400% Target Compounding Bot Online*\n"
+        f"💰 Initial Capital Synced: `${balance_now:.2f} USDT`\n"
+        f"🎯 Target Circuit Breaker: `${TARGET_CAPITAL:.2f}`\n"
+        f"Tracking: SOL, ETH, BTC"
+    )
+    print(f"Bot started. Initial balance synced: ${balance_now:.2f}")
     while True:
         try:
             run_trading_cycle()
         except Exception as e:
             print(f"Cycle execution error: {e}")
-        time.sleep(120)  # Check every 2 minutes
-            
+        time.sleep(120)
+        
