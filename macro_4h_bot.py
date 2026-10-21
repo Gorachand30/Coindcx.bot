@@ -105,13 +105,14 @@ def place_order(pair_str, side, qty):
     url = f"{BASE_URL}/exchange/v1/derivatives/futures/orders/create"
     timestamp = int(round(time.time() * 1000))
     
+    # Clean CoinDCX Futures payload
     body = {
         "timestamp": timestamp,
         "market": pair_str,
-        "side": str(side).lower(),
+        "side": "buy" if str(side).lower() == "buy" else "sell",
         "order_type": "market_order",
-         "total_quantity": str(qty),
-             "leverage": int(LEVERAGE)
+        "total_quantity": float(qty),
+        "leverage": 3
     }
     json_str, sig = sign_payload(body)
     headers = {
@@ -122,20 +123,24 @@ def place_order(pair_str, side, qty):
     
     try:
         res = requests.post(url, data=json_str, headers=headers, timeout=10)
+        
+        # Raw text directly Telegram par bhejenge taaki exact reason dikhe
         if res.status_code != 200:
-            send_telegram(f"⚠️ *CoinDCX HTTP {res.status_code}:* `{pair_str}`\n`{res.text[:120]}`")
+            clean_err = res.text.replace('"', '').replace('{', '').replace('}', '').strip()
+            send_telegram(f"⚠️ *HTTP {res.status_code} ({pair_str}):*\n`{clean_err[:180]}`")
             return None
-        if not res.text.strip():
-            return None
+            
         data = res.json()
-        if "id" in data or "order_id" in data:
+        if isinstance(data, dict) and ("id" in data or "order_id" in data):
             return data
         else:
             send_telegram(f"⚠️ *Order Rejected:* `{pair_str}`\n`{res.text[:120]}`")
             return None
+            
     except Exception as e:
-        send_telegram(f"⚠️ *Order Exception on {pair_str}:* {e}")
+        send_telegram(f"⚠️ *Execution Error on {pair_str}:* {e}")
         return None
+        
 
 # ==========================================
 # 5. MARKET ANALYSIS (30M)
