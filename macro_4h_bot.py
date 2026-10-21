@@ -100,20 +100,24 @@ def get_wallet_balance():
     except Exception:
         pass
     return 90.81
-
 def place_order(pair_str, side, qty):
     url = f"{BASE_URL}/exchange/v1/derivatives/futures/orders/create"
     timestamp = int(round(time.time() * 1000))
     
-    # Clean CoinDCX Futures payload
+    # Official CoinDCX Futures Payload Format
     body = {
         "timestamp": timestamp,
         "market": pair_str,
         "side": "buy" if str(side).lower() == "buy" else "sell",
         "order_type": "market_order",
         "total_quantity": float(qty),
-        "leverage": 3
+        "leverage": 3,
+        "notification": "no_notification",
+        "time_in_force": "good_till_cancelled",
+        "hidden": False,
+        "post_only": False
     }
+    
     json_str, sig = sign_payload(body)
     headers = {
         'Content-Type': 'application/json',
@@ -124,24 +128,24 @@ def place_order(pair_str, side, qty):
     try:
         res = requests.post(url, data=json_str, headers=headers, timeout=10)
         
-        # Raw text directly Telegram par bhejenge taaki exact reason dikhe
+        # Agar error aaye toh exact server text capture karein
         if res.status_code != 200:
-            clean_err = res.text.replace('"', '').replace('{', '').replace('}', '').strip()
-            send_telegram(f"⚠️ *HTTP {res.status_code} ({pair_str}):*\n`{clean_err[:180]}`")
+            raw_response = res.text if res.text else f"Status Code {res.status_code}"
+            # Telegram markdown conflicts avoid karne ke liye plain send
+            send_telegram(f"⚠️ Error {pair_str}: {raw_response[:200]}")
             return None
             
         data = res.json()
         if isinstance(data, dict) and ("id" in data or "order_id" in data):
             return data
         else:
-            send_telegram(f"⚠️ *Order Rejected:* `{pair_str}`\n`{res.text[:120]}`")
+            send_telegram(f"⚠️ Order Rejected ({pair_str}): {res.text[:150]}")
             return None
             
     except Exception as e:
-        send_telegram(f"⚠️ *Execution Error on {pair_str}:* {e}")
+        send_telegram(f"⚠️ Request Exception ({pair_str}): {e}")
         return None
-        
-
+                    
 # ==========================================
 # 5. MARKET ANALYSIS (30M)
 # ==========================================
