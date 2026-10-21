@@ -20,7 +20,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8832380997")
 
 BASE_URL = "https://api.coindcx.com"
 TARGET_CAPITAL = 400.0
-LEVERAGE = 3.5
+LEVERAGE = 3
 SL_ATR_MULT = 0.95
 ALLOCATION_RATE = 0.65
 
@@ -108,10 +108,10 @@ def place_order(pair_str, side, qty):
     body = {
         "timestamp": timestamp,
         "market": pair_str,
-        "side": side,
+        "side": str(side).lower(),
         "order_type": "market_order",
-        "total_quantity": qty,
-        "leverage": LEVERAGE
+         "total_quantity": str(qty),
+             "leverage": int(LEVERAGE)
     }
     json_str, sig = sign_payload(body)
     headers = {
