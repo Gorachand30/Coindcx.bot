@@ -41,7 +41,7 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"CoinDCX 30M Compounding Bot is Running 24/7.")
+        self.wfile.write(b"CoinDCX Bot Running.")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -122,26 +122,17 @@ def place_order(pair_str, side, qty):
     
     try:
         res = requests.post(url, data=json_str, headers=headers, timeout=10)
-        
-        # Check raw HTTP response
         if res.status_code != 200:
             send_telegram(f"⚠️ *CoinDCX HTTP {res.status_code}:* `{pair_str}`\n`{res.text[:120]}`")
             return None
-            
         if not res.text.strip():
-            send_telegram(f"⚠️ *Empty Body on {pair_str}* (HTTP 200)")
             return None
-            
         data = res.json()
         if "id" in data or "order_id" in data:
             return data
         else:
             send_telegram(f"⚠️ *Order Rejected:* `{pair_str}`\n`{res.text[:120]}`")
             return None
-            
-    except requests.exceptions.JSONDecodeError:
-        send_telegram(f"⚠️ *Invalid JSON (Status {res.status_code}):* `{pair_str}`\n`{res.text[:100]}`")
-        return None
     except Exception as e:
         send_telegram(f"⚠️ *Order Exception on {pair_str}:* {e}")
         return None
@@ -242,12 +233,11 @@ def run_trading_cycle():
 # 7. SERVICE ENTRY POINT
 # ==========================================
 if __name__ == "__main__":
-    # Start web server thread for Render Port Check
     web_thread = threading.Thread(target=run_http_server, daemon=True)
     web_thread.start()
 
-    b = get_wallet_balance()[span_9](start_span)[span_9](end_span)
-    send_telegram(f"🟢 *Compounding Engine Online*\nCapital: `${b:.2f} USDT`\nTarget: `${TARGET_CAPITAL}`\nTracking: SOL, ETH, BTC")[span_10](start_span)[span_10](end_span)
+    b = get_wallet_balance()
+    send_telegram(f"🟢 *Compounding Engine Online*\nCapital: `${b:.2f} USDT`\nTarget: `${TARGET_CAPITAL}`\nTracking: SOL, ETH, BTC")
 
     while True:
         try:
@@ -255,4 +245,3 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Loop cycle error: {e}")
         time.sleep(120)
-    
