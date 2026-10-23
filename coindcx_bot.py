@@ -5,18 +5,6 @@ import hashlib
 import json
 
 # ================= CONFIGURATION =================
-TELEGRAM_BOT_TOKEN = "8975800502:AAGkJttO42Vfp5kdenwDa_G7BaMwaz7qvyY"
-TELEGRAM_CHAT_ID = "8832380997"
-
-COINDCX_API_KEY = "7d61f2026a877742fa383d46de018af964ff23cf3a97504d"
-COINDCX_API_SECRET = "752ae196ccd6e5e71bfb57b08d48ab33a207cd6bbbb5211ebe25a0bbc5617967"
-
-SYMBOLS = ["SOLUSDT", "BTCUSDT", "ETHUSDT"]
-TIMEFRAME = "1h"
-BASE_MARGIN_USDT = 50.0   # Base trade margin
-LEVERAGE = 3
-RR_RATIO = 4.0
-SL_ATR_MULT = 1.5
 
 # ================= TELEGRAM ALERT =================
 def send_telegram(message):
